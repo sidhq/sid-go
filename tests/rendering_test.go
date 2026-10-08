@@ -1,23 +1,25 @@
-package sid
+package sid_test
 
 import (
 	"errors"
 	"strings"
 	"testing"
+
+	sid "github.com/sidhq/sid-go"
 )
 
 func TestParseRenderedModelFacingID(t *testing.T) {
 	t.Parallel()
-	modelID, span, err := ParseRenderedModelFacingID("004218")
+	modelID, span, err := sid.ParseRenderedModelFacingID("004218")
 	if err != nil || modelID != "004218" || span != nil {
 		t.Fatalf("bare reference = %q, %v, %v", modelID, span, err)
 	}
 
-	modelID, span, err = ParseRenderedModelFacingID("004218# -5: ١٠")
+	modelID, span, err = sid.ParseRenderedModelFacingID("004218# -5: ١٠")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if modelID != "004218" || span == nil || *span != (CharacterRange{-5, 10}) {
+	if modelID != "004218" || span == nil || *span != (sid.CharacterRange{-5, 10}) {
 		t.Fatalf("ranged reference = %q, %v", modelID, span)
 	}
 
@@ -25,7 +27,7 @@ func TestParseRenderedModelFacingID(t *testing.T) {
 		"", "#1:2", "a#", "a#x:y", "a#1:2:3", "a#1:2#3:4",
 		"a#2:2", "a#10:5", "a#+1:2", "a#1_0:20", "a#1.0:2",
 	} {
-		if _, _, err := ParseRenderedModelFacingID(reference); err == nil {
+		if _, _, err := sid.ParseRenderedModelFacingID(reference); err == nil {
 			t.Errorf("malformed reference %q did not fail", reference)
 		}
 	}
@@ -33,24 +35,24 @@ func TestParseRenderedModelFacingID(t *testing.T) {
 
 func TestRangePoliciesUseCodePointOffsets(t *testing.T) {
 	t.Parallel()
-	cache, err := NewDocumentCache()
+	cache, err := sid.NewDocumentCache()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cache.AddDocument("d", Document{"content": "😀alpha e\u0301 tail"}); err != nil {
+	if _, err := cache.AddDocument("d", sid.Document{"content": "😀alpha e\u0301 tail"}); err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := cache.ResolveCharRange("d", "content", CharacterRange{-3, 100})
+	resolved, err := cache.ResolveCharRange("d", "content", sid.CharacterRange{-3, 100})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved != (CharacterRange{0, 14}) {
+	if resolved != (sid.CharacterRange{0, 14}) {
 		t.Fatalf("resolved range = %v, want [0 14]", resolved)
 	}
 
-	view, err := cache.GetSingleSpanDocumentView("d", SingleSpanOptions{
+	view, err := cache.GetSingleSpanDocumentView("d", sid.SingleSpanOptions{
 		SnippetField:       "content",
-		SnippetDisplaySpan: RangeValue(1, 4),
+		SnippetDisplaySpan: sid.RangeValue(1, 4),
 		DisplayFields:      []string{"content"},
 	})
 	if err != nil {
@@ -65,18 +67,18 @@ func TestRangePoliciesUseCodePointOffsets(t *testing.T) {
 		t.Fatalf("unexpected code-point rendering:\n%s", xml)
 	}
 
-	strict, err := NewDocumentCache(DocumentCacheOptions{RangeMode: RangeModeStrict})
+	strict, err := sid.NewDocumentCache(sid.DocumentCacheOptions{RangeMode: sid.RangeModeStrict})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := strict.AddDocument("d", Document{"content": "short"}); err != nil {
+	if _, err := strict.AddDocument("d", sid.Document{"content": "short"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, span := range []CharacterRange{{-1, 3}, {1, 9}, {2, 2}, {99, 100}} {
+	for _, span := range []sid.CharacterRange{{-1, 3}, {1, 9}, {2, 2}, {99, 100}} {
 		if _, err := strict.ResolveCharRange("d", "content", span); err == nil {
 			t.Errorf("strict range %v did not fail", span)
 		} else {
-			var invalid *InvalidCharacterRange
+			var invalid *sid.InvalidCharacterRange
 			if !errors.As(err, &invalid) {
 				t.Errorf("strict range %v returned %T", span, err)
 			}
@@ -86,7 +88,7 @@ func TestRangePoliciesUseCodePointOffsets(t *testing.T) {
 
 func TestXMLAndMarkdownRendering(t *testing.T) {
 	t.Parallel()
-	document := Document{
+	document := sid.Document{
 		"title":   `A "quote" <b> &`,
 		"tags":    []string{"x", "y"},
 		"count":   3,
@@ -96,13 +98,13 @@ func TestXMLAndMarkdownRendering(t *testing.T) {
 		"empty":   []string{},
 		"content": "x|y\nz",
 	}
-	view := NewDocumentViewWithSnippet(
+	view := sid.NewDocumentViewWithSnippet(
 		"d",
 		"004218",
 		document,
 		"content",
 		nil,
-		[]CharacterRange{{0, 5}},
+		[]sid.CharacterRange{{0, 5}},
 		[]string{"title", "tags", "count", "zero", "no", "yes", "empty", "content"},
 	)
 
@@ -116,7 +118,7 @@ func TestXMLAndMarkdownRendering(t *testing.T) {
 		t.Fatalf("xml mismatch\ngot:  %s\nwant: %s", xml, expectedXML)
 	}
 
-	table, err := RenderMarkdownTable([]*DocumentView{view})
+	table, err := sid.RenderMarkdownTable([]*sid.DocumentView{view})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,10 +132,10 @@ func TestXMLAndMarkdownRendering(t *testing.T) {
 
 func TestPartialAndSeenRendering(t *testing.T) {
 	t.Parallel()
-	document := Document{"title": "T", "content": "aaaa bbbb cccc dddd"}
-	partial := NewDocumentViewWithSnippet(
+	document := sid.Document{"title": "T", "content": "aaaa bbbb cccc dddd"}
+	partial := sid.NewDocumentViewWithSnippet(
 		"d", "123456", document, "content", nil,
-		[]CharacterRange{{5, 9}}, []string{"title", "content"},
+		[]sid.CharacterRange{{5, 9}}, []string{"title", "content"},
 	)
 	xml, err := partial.RenderXML()
 	if err != nil {
@@ -145,9 +147,9 @@ func TestPartialAndSeenRendering(t *testing.T) {
 		t.Fatalf("partial xml = %q, want %q", xml, expected)
 	}
 
-	seen := NewDocumentViewWithSnippet(
+	seen := sid.NewDocumentViewWithSnippet(
 		"d", "123456", document, "content",
-		[]CharacterRange{{0, 19}}, nil, []string{"title", "content"},
+		[]sid.CharacterRange{{0, 19}}, nil, []string{"title", "content"},
 	)
 	parts, err := seen.RenderParts()
 	if err != nil {
@@ -160,7 +162,7 @@ func TestPartialAndSeenRendering(t *testing.T) {
 
 func TestMetadataViewAndEmptyMarkdown(t *testing.T) {
 	t.Parallel()
-	view := NewDocumentView("d", "abcde", Document{"title": "T"}, []string{"title"})
+	view := sid.NewDocumentView("d", "abcde", sid.Document{"title": "T"}, []string{"title"})
 	xml, err := view.RenderXML()
 	if err != nil {
 		t.Fatal(err)
@@ -168,7 +170,7 @@ func TestMetadataViewAndEmptyMarkdown(t *testing.T) {
 	if xml != `<doc id="abcde" title="T"></doc>` {
 		t.Fatalf("metadata xml = %q", xml)
 	}
-	table, err := RenderMarkdownTable(nil)
+	table, err := sid.RenderMarkdownTable(nil)
 	if err != nil || table != "" {
 		t.Fatalf("empty table = %q, %v", table, err)
 	}
