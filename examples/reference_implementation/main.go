@@ -23,11 +23,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"os"
 	"slices"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	sid "github.com/sidhq/sid-go"
 )
@@ -56,8 +58,9 @@ const (
 	reward          = "f1"  // the trained scoring prompt: "f1" (few, precise ids) | "ndcg" (many, best first)
 	reasoningEffort = "low" // "low" | "medium" | "high"
 
-	defaultLimit       = 5 // results per search when the model does not ask for a number
-	maxParallelFetches = 8 // backend queries in flight at once, across a turn's search calls
+	defaultLimit       = 5      // results per search when the model does not ask for a number
+	maxReadChars       = 10_000 // document text returned per read call
+	maxParallelFetches = 8      // backend queries in flight at once, across a turn's search calls
 )
 
 func baseURL() string {
@@ -167,9 +170,10 @@ var textSearchTool = object{
 }
 
 var readTool = object{
-	"type":        "function",
-	"name":        "read",
-	"description": "Search results show only short snippets. Read the full content of a specific document.",
+	"type": "function",
+	"name": "read",
+	"description": "Search results show only short snippets. Read up to 10,000 characters of a document per call. " +
+		"A bare ID starts at character 0; a ranged reference starts at its requested offset. Use further ranged reads to continue.",
 	"parameters": object{
 		"type": "object",
 		"properties": object{
@@ -300,11 +304,13 @@ func fetchResults(ctx context.Context, name string, arguments object) ([]sid.Doc
 // both search tools; only their fetch differs.
 func renderResults(cache *sid.DocumentCache, results []sid.Document, query string, snippetSize int) (string, error) {
 	rendered := make([]string, 0, len(results))
-	for _, document := range results {
-		dataID, ok := document[idField].(string)
+	for _, result := range results {
+		dataID, ok := result[idField].(string)
 		if !ok || dataID == "" {
-			return "", fmt.Errorf("backend document must carry a non-empty string %q: %v", idField, document)
+			return "", fmt.Errorf("backend document must carry a non-empty string %q: %v", idField, result)
 		}
+		// Keep backend results intact when searches reuse the same maps.
+		document := maps.Clone(result)
 		// Removed, not read: every cached field renders, and your database ids must not.
 		delete(document, idField)
 		if content, ok := document[snippetField].(string); !ok || content == "" {
@@ -357,8 +363,8 @@ func parseReference(reference any) (string, *sid.CharacterRange, error) {
 
 // read fetches one document (or a character range of it) by the id a search
 // returned. Explicit reads are not masked: the model asked for this span, so
-// it renders in full. Model mistakes (bad ref grammar, an unknown or
-// hallucinated id, an unusable range) return a ToolError.
+// it renders up to maxReadChars characters. Model mistakes (bad ref grammar,
+// an unknown or hallucinated id, an unusable range) return a ToolError.
 func read(cache *sid.DocumentCache, reference any) (string, error) {
 	modelID, charRange, err := parseReference(reference) // ToolError on bad grammar
 	if err != nil {
@@ -380,12 +386,26 @@ func read(cache *sid.DocumentCache, reference any) (string, error) {
 		resolved, err := cache.ResolveCharRange(dataID, snippetField, *charRange)
 		var invalid *sid.InvalidCharacterRange
 		if errors.As(err, &invalid) {
-			return "", toolErrorf("%s. Re-read '%s' without a range to see the whole "+
-				"document, or pass a range inside 0:doc_length.", invalid, modelID)
+			return "", toolErrorf("%s. Re-read '%s' without a range to read from the "+
+				"start, or pass a range inside 0:doc_length.", invalid, modelID)
 		} else if err != nil {
 			return "", err
 		}
 		charRange = &resolved
+	}
+
+	// Cap document text per read; further ranged reads can continue from here.
+	// Count Unicode code points, matching the SDK's character offsets.
+	if charRange != nil {
+		charRange = sid.RangeValue(charRange.Start(), min(charRange.End(), charRange.Start()+maxReadChars))
+	} else {
+		document, err := cache.GetDocument(dataID)
+		if err != nil {
+			return "", err
+		}
+		if content, _ := document[snippetField].(string); utf8.RuneCountInString(content) > maxReadChars {
+			charRange = sid.RangeValue(0, maxReadChars)
+		}
 	}
 
 	view, err := cache.GetSingleSpanDocumentView(dataID, sid.SingleSpanOptions{
