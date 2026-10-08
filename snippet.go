@@ -266,12 +266,45 @@ func analyzeTokens(text string, language Language) []sourceToken {
 	return filterTokens(tokenizeSource(text), language)
 }
 
+// lowercase mirrors Alyze: each code point is replaced by its Unicode 17
+// lowercase mapping, without context-dependent rules such as final sigma.
+func lowercase(text string) string {
+	ascii, upper := true, false
+	for i := 0; i < len(text); i++ {
+		if b := text[i]; b >= utf8.RuneSelf {
+			ascii = false
+			break
+		} else if 'A' <= b && b <= 'Z' {
+			upper = true
+		}
+	}
+	if ascii {
+		if !upper {
+			return text
+		}
+		return strings.ToLower(text)
+	}
+	var result strings.Builder
+	result.Grow(len(text))
+	for _, char := range text {
+		i := sort.Search(len(lowercaseMappings), func(i int) bool {
+			return lowercaseMappings[i].from >= char
+		})
+		if i < len(lowercaseMappings) && lowercaseMappings[i].from == char {
+			result.WriteString(lowercaseMappings[i].to)
+		} else {
+			result.WriteRune(char)
+		}
+	}
+	return result.String()
+}
+
 // filterTokens lowercases tokens and removes stopwords, keeping each token's
 // source position.
 func filterTokens(source []sourceToken, language Language) []sourceToken {
 	result := make([]sourceToken, 0, len(source))
 	for _, token := range source {
-		token.text = strings.ToLower(token.text)
+		token.text = lowercase(token.text)
 		if language != LanguageGeneric {
 			if _, stopword := stopwordSets[language][token.text]; stopword {
 				continue
