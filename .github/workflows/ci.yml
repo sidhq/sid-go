@@ -26,3 +26,7 @@ jobs:
       - run: go vet ./...
       - if: matrix.go == 'stable'
         run: go test -race ./...
+      # The examples are a separate module: they use the OpenAI Go client, which needs Go 1.25+.
+      - if: matrix.go == 'stable'
+        working-directory: examples
+        run: go vet ./... && go build -o /tmp/sid-reference-implementation ./reference_implementation
