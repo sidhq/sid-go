@@ -153,53 +153,34 @@ func BM25SnippetWithStride(query, content string, options ...SnippetOptions) (Ch
 	starts := windowStarts(len(source), opts.WindowSize, opts.Stride)
 	unigramLengths := make([]int, len(starts))
 	bigramLengths := make([]int, len(starts))
-	for i, start := range starts {
-		count := countPositions(filteredPositions, start, start+opts.WindowSize)
-		unigramLengths[i] = count
+	windowPositionCounts(filteredPositions, starts, opts.WindowSize, unigramLengths)
+	for i, count := range unigramLengths {
 		bigramLengths[i] = max(0, count-1)
 	}
 	averageUnigramLength := average(unigramLengths)
 	averageBigramLength := average(bigramLengths)
 	scores := make([]float64, len(starts))
+	frequencies := make([]int, len(starts))
 
+	// Features absent from the document contribute nothing, and a zero term
+	// frequency adds an exact zero, so both are skipped without changing
+	// scores.
 	for _, feature := range orderedUnigrams(queryTokens) {
 		events := unigramEvents[feature]
-		documentFrequency := 0
-		for _, start := range starts {
-			if countPositions(events, start, start+opts.WindowSize) > 0 {
-				documentFrequency++
-			}
-		}
-		if documentFrequency == 0 {
+		if len(events) == 0 {
 			continue
 		}
-		featureIDF := inverseDocumentFrequency(len(starts), documentFrequency)
-		for i, start := range starts {
-			tf := countPositions(events, start, start+opts.WindowSize)
-			scores[i] += unigramWeight * bm25TermScore(
-				tf, unigramLengths[i], averageUnigramLength, featureIDF,
-			)
-		}
+		windowPositionCounts(events, starts, opts.WindowSize, frequencies)
+		addBM25Scores(scores, frequencies, unigramLengths, averageUnigramLength, unigramWeight)
 	}
 
 	for _, feature := range orderedBigrams(queryTokens) {
 		events := bigramEvents[feature]
-		documentFrequency := 0
-		for _, start := range starts {
-			if countBigramEvents(events, start, start+opts.WindowSize) > 0 {
-				documentFrequency++
-			}
-		}
-		if documentFrequency == 0 {
+		if len(events) == 0 {
 			continue
 		}
-		featureIDF := inverseDocumentFrequency(len(starts), documentFrequency)
-		for i, start := range starts {
-			tf := countBigramEvents(events, start, start+opts.WindowSize)
-			scores[i] += bigramWeight * bm25TermScore(
-				tf, bigramLengths[i], averageBigramLength, featureIDF,
-			)
-		}
+		windowBigramCounts(events, starts, opts.WindowSize, frequencies)
+		addBM25Scores(scores, frequencies, bigramLengths, averageBigramLength, bigramWeight)
 	}
 
 	best := 0
@@ -356,20 +337,50 @@ func windowStarts(sourceTokenCount, windowSize, stride int) []int {
 	return starts
 }
 
-func countPositions(positions []int, start, end int) int {
-	left := sort.SearchInts(positions, start)
-	right := sort.SearchInts(positions, end)
-	return right - left
+func addBM25Scores(scores []float64, frequencies, lengths []int, averageLength, weight float64) {
+	documentFrequency := 0
+	for _, tf := range frequencies {
+		if tf > 0 {
+			documentFrequency++
+		}
+	}
+	idf := inverseDocumentFrequency(len(frequencies), documentFrequency)
+	for i, tf := range frequencies {
+		if tf > 0 {
+			scores[i] += weight * bm25TermScore(tf, lengths[i], averageLength, idf)
+		}
+	}
 }
 
-func countBigramEvents(events []bigramEvent, start, end int) int {
-	left := sort.Search(len(events), func(i int) bool {
-		return events[i].left >= start
-	})
-	right := sort.Search(len(events), func(i int) bool {
-		return events[i].right >= end
-	})
-	return max(0, right-left)
+// windowPositionCounts stores, for each window, how many sorted positions
+// fall in [start, start+windowSize). Window starts and ends both increase, so
+// one sweep replaces a binary search per window.
+func windowPositionCounts(positions, starts []int, windowSize int, counts []int) {
+	left, right := 0, 0
+	for i, start := range starts {
+		for left < len(positions) && positions[left] < start {
+			left++
+		}
+		for right < len(positions) && positions[right] < start+windowSize {
+			right++
+		}
+		counts[i] = right - left
+	}
+}
+
+// windowBigramCounts counts bigrams whose left token is at or after start and
+// whose right token is before start+windowSize.
+func windowBigramCounts(events []bigramEvent, starts []int, windowSize int, counts []int) {
+	left, right := 0, 0
+	for i, start := range starts {
+		for left < len(events) && events[left].left < start {
+			left++
+		}
+		for right < len(events) && events[right].right < start+windowSize {
+			right++
+		}
+		counts[i] = max(0, right-left)
+	}
 }
 
 func average(values []int) float64 {
