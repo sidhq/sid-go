@@ -1,19 +1,21 @@
-package sid
+package sid_test
 
 import (
 	"errors"
 	"fmt"
 	"sync"
 	"testing"
+
+	sid "github.com/sidhq/sid-go"
 )
 
 func TestCacheInsertionLookupsAndIdempotence(t *testing.T) {
 	t.Parallel()
-	cache, err := NewDocumentCache()
+	cache, err := sid.NewDocumentCache()
 	if err != nil {
 		t.Fatal(err)
 	}
-	input := Document{
+	input := sid.Document{
 		"content": "some text",
 		"nested":  map[string]any{"value": 1},
 	}
@@ -53,17 +55,17 @@ func TestCacheInsertionLookupsAndIdempotence(t *testing.T) {
 
 func TestCacheSnippetSeenMaskingAndRendering(t *testing.T) {
 	t.Parallel()
-	cache, err := NewDocumentCache()
+	cache, err := sid.NewDocumentCache()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cache.AddDocument("short", Document{
+	if _, err := cache.AddDocument("short", sid.Document{
 		"title": "T", "content": "just a few words",
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	first, err := cache.ApplySnippet("short", ApplySnippetOptions{
+	first, err := cache.ApplySnippet("short", sid.ApplySnippetOptions{
 		SnippetField:  "content",
 		Query:         "words",
 		DisplayFields: []string{"title", "content"},
@@ -72,14 +74,14 @@ func TestCacheSnippetSeenMaskingAndRendering(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(first.SnippetDisplaySpans) != 1 ||
-		first.SnippetDisplaySpans[0] != (CharacterRange{0, 16}) {
+		first.SnippetDisplaySpans[0] != (sid.CharacterRange{0, 16}) {
 		t.Fatalf("first spans = %v", first.SnippetDisplaySpans)
 	}
 	if err := cache.UpdateSeen(first); err != nil {
 		t.Fatal(err)
 	}
 
-	repeat, err := cache.ApplySnippet("short", ApplySnippetOptions{
+	repeat, err := cache.ApplySnippet("short", sid.ApplySnippetOptions{
 		SnippetField:  "content",
 		Query:         "words",
 		DisplayFields: []string{"title", "content"},
@@ -103,12 +105,12 @@ func TestCacheShortSeenRunsAreRedisplayed(t *testing.T) {
 	t.Parallel()
 	cache := mustCache(t)
 	content := wordsForTest(100)
-	if _, err := cache.AddDocument("d", Document{"content": content}); err != nil {
+	if _, err := cache.AddDocument("d", sid.Document{"content": content}); err != nil {
 		t.Fatal(err)
 	}
-	seen, err := cache.GetSingleSpanDocumentView("d", SingleSpanOptions{
+	seen, err := cache.GetSingleSpanDocumentView("d", sid.SingleSpanOptions{
 		SnippetField:       "content",
-		SnippetDisplaySpan: RangeValue(0, 50),
+		SnippetDisplaySpan: sid.RangeValue(0, 50),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +119,7 @@ func TestCacheShortSeenRunsAreRedisplayed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	view, err := cache.ApplySnippet("d", ApplySnippetOptions{
+	view, err := cache.ApplySnippet("d", sid.ApplySnippetOptions{
 		SnippetField: "content",
 		Query:        "w0090",
 		SnippetSize:  200,
@@ -139,7 +141,7 @@ func TestForkSharesFamilyAndIsolatesSeen(t *testing.T) {
 	if _, err := cache.AddDocument("a", testDocument("a")); err != nil {
 		t.Fatal(err)
 	}
-	markRange(t, cache, "a", CharacterRange{0, 200})
+	markRange(t, cache, "a", sid.CharacterRange{0, 200})
 
 	forks, err := cache.Fork(2)
 	if err != nil {
@@ -159,12 +161,12 @@ func TestForkSharesFamilyAndIsolatesSeen(t *testing.T) {
 		t.Fatal("fork family does not share the stored document")
 	}
 
-	markRange(t, left, "a", CharacterRange{300, 500})
+	markRange(t, left, "a", sid.CharacterRange{300, 500})
 	if got := left.SeenLedger()["a"]; len(got) != 2 {
 		t.Fatalf("left ledger = %v", got)
 	}
-	for name, other := range map[string]*DocumentCache{"parent": cache, "right": right} {
-		if got := other.SeenLedger()["a"]; len(got) != 1 || got[0] != (CharacterRange{0, 200}) {
+	for name, other := range map[string]*sid.DocumentCache{"parent": cache, "right": right} {
+		if got := other.SeenLedger()["a"]; len(got) != 1 || got[0] != (sid.CharacterRange{0, 200}) {
 			t.Fatalf("%s ledger = %v", name, got)
 		}
 	}
@@ -173,26 +175,26 @@ func TestForkSharesFamilyAndIsolatesSeen(t *testing.T) {
 func TestSingleSpanRangeModesAndMetadataViews(t *testing.T) {
 	t.Parallel()
 	cache := mustCache(t)
-	if _, err := cache.AddDocument("d", Document{
+	if _, err := cache.AddDocument("d", sid.Document{
 		"title": "T", "content": "alpha bravo charlie delta",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	view, err := cache.GetSingleSpanDocumentView("d", SingleSpanOptions{
+	view, err := cache.GetSingleSpanDocumentView("d", sid.SingleSpanOptions{
 		SnippetField:       "content",
-		SnippetDisplaySpan: RangeValue(-5, 11),
+		SnippetDisplaySpan: sid.RangeValue(-5, 11),
 		DisplayFields:      []string{"title", "content"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.SnippetDisplaySpans[0] != (CharacterRange{0, 11}) {
+	if view.SnippetDisplaySpans[0] != (sid.CharacterRange{0, 11}) {
 		t.Fatalf("clamped span = %v", view.SnippetDisplaySpans)
 	}
 	if _, err := cache.GetSingleSpanDocumentView("d"); err == nil {
 		t.Fatal("metadata-only view accepted omitted display fields")
 	}
-	metadata, err := cache.GetSingleSpanDocumentView("d", SingleSpanOptions{
+	metadata, err := cache.GetSingleSpanDocumentView("d", sid.SingleSpanOptions{
 		DisplayFields: []string{"title"},
 	})
 	if err != nil {
@@ -208,22 +210,22 @@ func TestSingleSpanRangeModesAndMetadataViews(t *testing.T) {
 
 func TestCacheSelectorOutputIsStrictlyValidated(t *testing.T) {
 	t.Parallel()
-	cache, err := NewDocumentCache(DocumentCacheOptions{
-		SnippetSelector: func(string, string, SnippetOptions) (CharacterRange, error) {
-			return CharacterRange{0, 999}, nil
+	cache, err := sid.NewDocumentCache(sid.DocumentCacheOptions{
+		SnippetSelector: func(string, string, sid.SnippetOptions) (sid.CharacterRange, error) {
+			return sid.CharacterRange{0, 999}, nil
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cache.AddDocument("d", Document{"content": "short text"}); err != nil {
+	if _, err := cache.AddDocument("d", sid.Document{"content": "short text"}); err != nil {
 		t.Fatal(err)
 	}
-	_, err = cache.ApplySnippet("d", ApplySnippetOptions{
+	_, err = cache.ApplySnippet("d", sid.ApplySnippetOptions{
 		SnippetField: "content",
 		Query:        "short",
 	})
-	var invalid *InvalidCharacterRange
+	var invalid *sid.InvalidCharacterRange
 	if !errors.As(err, &invalid) {
 		t.Fatalf("selector error = %T %v, want InvalidCharacterRange", err, err)
 	}
@@ -235,14 +237,14 @@ func TestCacheConcurrentFamilyAddsAndSeenUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	caches := append([]*DocumentCache{parent}, forks...)
+	caches := append([]*sid.DocumentCache{parent}, forks...)
 
 	const documentsPerCache = 100
 	var wait sync.WaitGroup
 	errorsChannel := make(chan error, len(caches))
 	for worker, cache := range caches {
 		wait.Add(1)
-		go func(worker int, cache *DocumentCache) {
+		go func(worker int, cache *sid.DocumentCache) {
 			defer wait.Done()
 			for i := range documentsPerCache {
 				dataID := fmt.Sprintf("doc-%d-%d", worker, i)
@@ -250,9 +252,9 @@ func TestCacheConcurrentFamilyAddsAndSeenUpdates(t *testing.T) {
 					errorsChannel <- err
 					return
 				}
-				view, err := cache.GetSingleSpanDocumentView(dataID, SingleSpanOptions{
+				view, err := cache.GetSingleSpanDocumentView(dataID, sid.SingleSpanOptions{
 					SnippetField:       "content",
-					SnippetDisplaySpan: RangeValue(0, 100),
+					SnippetDisplaySpan: sid.RangeValue(0, 100),
 				})
 				if err != nil {
 					errorsChannel <- err
@@ -280,33 +282,33 @@ func TestCacheConcurrentFamilyAddsAndSeenUpdates(t *testing.T) {
 			if !parent.Contains(dataID) {
 				t.Fatalf("family lost %s", dataID)
 			}
-			if got := cache.SeenLedger()[dataID]; len(got) != 1 || got[0] != (CharacterRange{0, 100}) {
+			if got := cache.SeenLedger()[dataID]; len(got) != 1 || got[0] != (sid.CharacterRange{0, 100}) {
 				t.Fatalf("%s ledger = %v", dataID, got)
 			}
 		}
 	}
 }
 
-func mustCache(t *testing.T) *DocumentCache {
+func mustCache(t *testing.T) *sid.DocumentCache {
 	t.Helper()
-	cache, err := NewDocumentCache()
+	cache, err := sid.NewDocumentCache()
 	if err != nil {
 		t.Fatal(err)
 	}
 	return cache
 }
 
-func testDocument(tag string) Document {
-	return Document{
+func testDocument(tag string) sid.Document {
+	return sid.Document{
 		"title":   "doc " + tag,
 		"content": wordsForTest(500),
 		"meta":    map[string]any{"tag": tag},
 	}
 }
 
-func markRange(t *testing.T, cache *DocumentCache, dataID string, span CharacterRange) {
+func markRange(t *testing.T, cache *sid.DocumentCache, dataID string, span sid.CharacterRange) {
 	t.Helper()
-	view, err := cache.GetSingleSpanDocumentView(dataID, SingleSpanOptions{
+	view, err := cache.GetSingleSpanDocumentView(dataID, sid.SingleSpanOptions{
 		SnippetField:       "content",
 		SnippetDisplaySpan: &span,
 	})

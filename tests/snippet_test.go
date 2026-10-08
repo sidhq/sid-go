@@ -1,10 +1,12 @@
-package sid
+package sid_test
 
 import (
 	"math"
 	"math/bits"
 	"sync"
 	"testing"
+
+	sid "github.com/sidhq/sid-go"
 )
 
 func TestBM25SnippetParity(t *testing.T) {
@@ -13,8 +15,8 @@ func TestBM25SnippetParity(t *testing.T) {
 		name           string
 		query, content string
 		window, stride int
-		language       Language
-		expected       CharacterRange
+		language       sid.Language
+		expected       sid.CharacterRange
 	}{
 		{
 			name:     "phrase beats scattered terms",
@@ -22,8 +24,8 @@ func TestBM25SnippetParity(t *testing.T) {
 			content:  "contingent filler filler fee filler filler agreement pad pad pad contingent fee agreement tail tail tail",
 			window:   6,
 			stride:   2,
-			language: LanguageEnglish,
-			expected: CharacterRange{57, 94},
+			language: sid.LanguageEnglish,
+			expected: sid.CharacterRange{57, 94},
 		},
 		{
 			name:     "legal fee calculation",
@@ -31,8 +33,8 @@ func TestBM25SnippetParity(t *testing.T) {
 			content:  "Background procedural facts occupy this opening passage and do not discuss the disputed terms. Additional unrelated history appears here. Further, the hearing judge determined that Mr. Sanderson violated the provision through his failure to provide Ms. Ozel with adequate information regarding the expenses associated with the representation, whether such expenses would be deducted before or after the contingent fee is calculated, and by failing to document the agreement.",
 			window:   24,
 			stride:   5,
-			language: LanguageEnglish,
-			expected: CharacterRange{318, 473},
+			language: sid.LanguageEnglish,
+			expected: sid.CharacterRange{318, 473},
 		},
 		{
 			name:     "legal fee agreement recommendation",
@@ -40,8 +42,8 @@ func TestBM25SnippetParity(t *testing.T) {
 			content:  "The record begins with unrelated scheduling and jurisdictional matters. We agree with the Panel's conclusion that the fee under the Fee Agreement was not contingent on the outcome of the case, but rather, it was contingent on the Attorney's recommendation of a settlement offer which he deemed reasonable. The remaining section addresses sanctions.",
 			window:   25,
 			stride:   5,
-			language: LanguageEnglish,
-			expected: CharacterRange{132, 283},
+			language: sid.LanguageEnglish,
+			expected: sid.CharacterRange{132, 283},
 		},
 		{
 			name:     "german stopword",
@@ -49,8 +51,8 @@ func TestBM25SnippetParity(t *testing.T) {
 			content:  "alpha beta und x x alpha und beta x x x x",
 			window:   4,
 			stride:   1,
-			language: LanguageGerman,
-			expected: CharacterRange{0, 16},
+			language: sid.LanguageGerman,
+			expected: sid.CharacterRange{0, 16},
 		},
 		{
 			name:     "generic keeps stopword",
@@ -58,8 +60,8 @@ func TestBM25SnippetParity(t *testing.T) {
 			content:  "alpha beta und x x alpha und beta x x x x",
 			window:   4,
 			stride:   1,
-			language: LanguageGeneric,
-			expected: CharacterRange{17, 33},
+			language: sid.LanguageGeneric,
+			expected: sid.CharacterRange{17, 33},
 		},
 		{
 			name:     "astral unicode",
@@ -67,8 +69,8 @@ func TestBM25SnippetParity(t *testing.T) {
 			content:  "😀 zero one café target three four",
 			window:   3,
 			stride:   1,
-			language: LanguageEnglish,
-			expected: CharacterRange{7, 22},
+			language: sid.LanguageEnglish,
+			expected: sid.CharacterRange{7, 22},
 		},
 		{
 			name:     "combining mark",
@@ -76,8 +78,8 @@ func TestBM25SnippetParity(t *testing.T) {
 			content:  "e\u0301 zero one target three four",
 			window:   3,
 			stride:   1,
-			language: LanguageEnglish,
-			expected: CharacterRange{3, 18},
+			language: sid.LanguageEnglish,
+			expected: sid.CharacterRange{3, 18},
 		},
 		{
 			name:     "cjk segmentation",
@@ -85,8 +87,8 @@ func TestBM25SnippetParity(t *testing.T) {
 			content:  "日本語 中文 한국어 target more words here",
 			window:   3,
 			stride:   1,
-			language: LanguageEnglish,
-			expected: CharacterRange{5, 17},
+			language: sid.LanguageEnglish,
+			expected: sid.CharacterRange{5, 17},
 		},
 		{
 			name:     "final window",
@@ -94,8 +96,8 @@ func TestBM25SnippetParity(t *testing.T) {
 			content:  "zero one two three four five last",
 			window:   3,
 			stride:   20,
-			language: LanguageEnglish,
-			expected: CharacterRange{19, 33},
+			language: sid.LanguageEnglish,
+			expected: sid.CharacterRange{19, 33},
 		},
 		{
 			name:     "stopword only",
@@ -103,15 +105,15 @@ func TestBM25SnippetParity(t *testing.T) {
 			content:  "one two three four five six seven eight",
 			window:   3,
 			stride:   1,
-			language: LanguageEnglish,
-			expected: CharacterRange{0, 13},
+			language: sid.LanguageEnglish,
+			expected: sid.CharacterRange{0, 13},
 		},
 	}
 	for _, test := range tests {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			actual, err := BM25SnippetWithStride(test.query, test.content, SnippetOptions{
+			actual, err := sid.BM25SnippetWithStride(test.query, test.content, sid.SnippetOptions{
 				WindowSize: test.window,
 				Stride:     test.stride,
 				Language:   test.language,
@@ -129,14 +131,14 @@ func TestBM25SnippetParity(t *testing.T) {
 func TestBM25SnippetShortAndPunctuationDocuments(t *testing.T) {
 	t.Parallel()
 	for _, content := range []string{"", "!!! ...", "one two"} {
-		span, err := BM25SnippetWithStride("query", content, SnippetOptions{
+		span, err := sid.BM25SnippetWithStride("query", content, sid.SnippetOptions{
 			WindowSize: 3,
 			Stride:     1,
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		expected := CharacterRange{0, len([]rune(content))}
+		expected := sid.CharacterRange{0, len([]rune(content))}
 		if span != expected {
 			t.Fatalf("content %q: got %v, want %v", content, span, expected)
 		}
@@ -145,21 +147,21 @@ func TestBM25SnippetShortAndPunctuationDocuments(t *testing.T) {
 
 func TestBM25SnippetValidation(t *testing.T) {
 	t.Parallel()
-	if _, err := BM25SnippetWithStride("q", "text", SnippetOptions{WindowSize: -1, Stride: 1}); err == nil {
+	if _, err := sid.BM25SnippetWithStride("q", "text", sid.SnippetOptions{WindowSize: -1, Stride: 1}); err == nil {
 		t.Fatal("negative window size did not fail")
 	}
-	if _, err := BM25SnippetWithStride("q", "text", SnippetOptions{WindowSize: 2, Stride: -1}); err == nil {
+	if _, err := sid.BM25SnippetWithStride("q", "text", sid.SnippetOptions{WindowSize: 2, Stride: -1}); err == nil {
 		t.Fatal("negative stride did not fail")
 	}
-	if _, err := BM25SnippetWithStride("q", "text", SnippetOptions{Language: "klingon"}); err == nil {
+	if _, err := sid.BM25SnippetWithStride("q", "text", sid.SnippetOptions{Language: "klingon"}); err == nil {
 		t.Fatal("unknown language did not fail")
 	}
-	if _, err := BM25SnippetWithStride("q", string([]byte{0xff})); err == nil {
+	if _, err := sid.BM25SnippetWithStride("q", string([]byte{0xff})); err == nil {
 		t.Fatal("malformed UTF-8 did not fail")
 	}
 	if bits.UintSize == 64 {
 		tooLarge := uint64(math.MaxUint32) + 1
-		if _, err := BM25SnippetWithStride("q", "text", SnippetOptions{
+		if _, err := sid.BM25SnippetWithStride("q", "text", sid.SnippetOptions{
 			WindowSize: int(tooLarge),
 			Stride:     1,
 		}); err == nil {
@@ -170,8 +172,8 @@ func TestBM25SnippetValidation(t *testing.T) {
 
 func TestEverySupportedLanguage(t *testing.T) {
 	t.Parallel()
-	for _, language := range SupportedLanguages {
-		if _, err := BM25SnippetWithStride("target", "some target text", SnippetOptions{
+	for _, language := range sid.SupportedLanguages {
+		if _, err := sid.BM25SnippetWithStride("target", "some target text", sid.SnippetOptions{
 			Language: language,
 		}); err != nil {
 			t.Errorf("%s: %v", language, err)
@@ -181,7 +183,7 @@ func TestEverySupportedLanguage(t *testing.T) {
 
 func TestBM25SnippetConcurrentDeterminism(t *testing.T) {
 	content := wordsForTest(500)
-	expected, err := BM25SnippetWithStride("w0400 w0401", content)
+	expected, err := sid.BM25SnippetWithStride("w0400 w0401", content)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +196,7 @@ func TestBM25SnippetConcurrentDeterminism(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			for range 50 {
-				actual, err := BM25SnippetWithStride("w0400 w0401", content)
+				actual, err := sid.BM25SnippetWithStride("w0400 w0401", content)
 				if err != nil {
 					errors <- err
 					return
@@ -214,14 +216,14 @@ func TestBM25SnippetConcurrentDeterminism(t *testing.T) {
 }
 
 type spanMismatch struct {
-	actual, expected CharacterRange
+	actual, expected sid.CharacterRange
 }
 
 func (err *spanMismatch) Error() string {
 	return "snippet selection was nondeterministic"
 }
 
-func runeSlice(text string, span CharacterRange) string {
+func runeSlice(text string, span sid.CharacterRange) string {
 	return string([]rune(text)[span[0]:span[1]])
 }
 
@@ -251,4 +253,33 @@ func leftPad(value, width int) string {
 		text = digits[:missing] + text
 	}
 	return text
+}
+
+// Alyze counts symbol and emoji segments such as ® and 👍 as source tokens,
+// so they occupy window slots. Expected ranges come from sid-sdk 0.2.1.
+func TestBM25SnippetCountsSymbolTokens(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		content  string
+		window   int
+		expected sid.CharacterRange
+	}{
+		{"Missing Children® (NCMEC) data here", 3, sid.CharacterRange{0, 17}},
+		{"SmartPay® 3 Master", 2, sid.CharacterRange{0, 9}},
+		{"Brand™ name", 2, sid.CharacterRange{0, 6}},
+		{"a 👍 b", 2, sid.CharacterRange{0, 3}},
+		{"e-mail don't U.S. 3.14 foo_bar", 3, sid.CharacterRange{0, 12}},
+	}
+	for _, test := range tests {
+		got, err := sid.BM25SnippetWithStride("the", test.content, sid.SnippetOptions{
+			WindowSize: test.window,
+			Stride:     test.window,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != test.expected {
+			t.Errorf("%q window %d: got %v, want %v", test.content, test.window, got, test.expected)
+		}
+	}
 }

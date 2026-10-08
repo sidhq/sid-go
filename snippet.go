@@ -5,7 +5,6 @@ import (
 	"math"
 	"sort"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/clipperhouse/uax29/v2/words"
@@ -127,7 +126,7 @@ func BM25SnippetWithStride(query, content string, options ...SnippetOptions) (Ch
 	queryTokens := analyzeTokens(query, opts.Language)
 	unigrams := uniqueUnigrams(queryTokens)
 	bigrams := uniqueBigrams(queryTokens)
-	contentTokens := analyzeTokens(content, opts.Language)
+	contentTokens := filterTokens(source, opts.Language)
 
 	filteredPositions := make([]int, len(contentTokens))
 	unigramEvents := make(map[string][]int, len(unigrams))
@@ -154,53 +153,34 @@ func BM25SnippetWithStride(query, content string, options ...SnippetOptions) (Ch
 	starts := windowStarts(len(source), opts.WindowSize, opts.Stride)
 	unigramLengths := make([]int, len(starts))
 	bigramLengths := make([]int, len(starts))
-	for i, start := range starts {
-		count := countPositions(filteredPositions, start, start+opts.WindowSize)
-		unigramLengths[i] = count
+	windowPositionCounts(filteredPositions, starts, opts.WindowSize, unigramLengths)
+	for i, count := range unigramLengths {
 		bigramLengths[i] = max(0, count-1)
 	}
 	averageUnigramLength := average(unigramLengths)
 	averageBigramLength := average(bigramLengths)
 	scores := make([]float64, len(starts))
+	frequencies := make([]int, len(starts))
 
+	// Features absent from the document contribute nothing, and a zero term
+	// frequency adds an exact zero, so both are skipped without changing
+	// scores.
 	for _, feature := range orderedUnigrams(queryTokens) {
 		events := unigramEvents[feature]
-		documentFrequency := 0
-		for _, start := range starts {
-			if countPositions(events, start, start+opts.WindowSize) > 0 {
-				documentFrequency++
-			}
-		}
-		if documentFrequency == 0 {
+		if len(events) == 0 {
 			continue
 		}
-		featureIDF := inverseDocumentFrequency(len(starts), documentFrequency)
-		for i, start := range starts {
-			tf := countPositions(events, start, start+opts.WindowSize)
-			scores[i] += unigramWeight * bm25TermScore(
-				tf, unigramLengths[i], averageUnigramLength, featureIDF,
-			)
-		}
+		windowPositionCounts(events, starts, opts.WindowSize, frequencies)
+		addBM25Scores(scores, frequencies, unigramLengths, averageUnigramLength, unigramWeight)
 	}
 
 	for _, feature := range orderedBigrams(queryTokens) {
 		events := bigramEvents[feature]
-		documentFrequency := 0
-		for _, start := range starts {
-			if countBigramEvents(events, start, start+opts.WindowSize) > 0 {
-				documentFrequency++
-			}
-		}
-		if documentFrequency == 0 {
+		if len(events) == 0 {
 			continue
 		}
-		featureIDF := inverseDocumentFrequency(len(starts), documentFrequency)
-		for i, start := range starts {
-			tf := countBigramEvents(events, start, start+opts.WindowSize)
-			scores[i] += bigramWeight * bm25TermScore(
-				tf, bigramLengths[i], averageBigramLength, featureIDF,
-			)
-		}
+		windowBigramCounts(events, starts, opts.WindowSize, frequencies)
+		addBM25Scores(scores, frequencies, bigramLengths, averageBigramLength, bigramWeight)
 	}
 
 	best := 0
@@ -232,46 +212,99 @@ func validateLanguage(language Language) (Language, error) {
 	)
 }
 
+// tokenizeSource returns the word-like UAX #29 segments of text with
+// code-point offsets. Segments arrive in order, so offsets are counted
+// incrementally rather than through a byte-to-code-point table.
 func tokenizeSource(text string) []sourceToken {
-	byteToCodePoint := make(map[int]int, utf8.RuneCountInString(text)+1)
-	position := 0
-	for byteOffset := range text {
-		byteToCodePoint[byteOffset] = position
-		position++
-	}
-	byteToCodePoint[len(text)] = position
-
-	result := make([]sourceToken, 0)
+	result := make([]sourceToken, 0, len(text)/6)
+	byteOffset, codePoint := 0, 0
 	iterator := words.FromString(text)
 	for iterator.Next() {
 		value := iterator.Value()
-		if !containsWordRune(value) {
+		if !isWordLike(value) {
 			continue
 		}
+		start := codePoint + utf8.RuneCountInString(text[byteOffset:iterator.Start()])
+		end := start + utf8.RuneCountInString(value)
+		byteOffset, codePoint = iterator.End(), end
 		result = append(result, sourceToken{
 			text:     value,
-			start:    byteToCodePoint[iterator.Start()],
-			end:      byteToCodePoint[iterator.End()],
+			start:    start,
+			end:      end,
 			position: len(result),
 		})
 	}
 	return result
 }
 
-func containsWordRune(value string) bool {
-	for _, char := range value {
-		if unicode.IsLetter(char) || unicode.IsNumber(char) {
+// isWordLike mirrors Alyze: a segment is a token when any of its characters
+// is in wordLikeRanges.
+func isWordLike(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if b := value[i]; b >= utf8.RuneSelf {
+			for _, char := range value[i:] {
+				if isWordLikeRune(char) {
+					return true
+				}
+			}
+			return false
+		} else if 'a' <= b && b <= 'z' || 'A' <= b && b <= 'Z' || '0' <= b && b <= '9' {
 			return true
 		}
 	}
 	return false
 }
 
+func isWordLikeRune(char rune) bool {
+	i := sort.Search(len(wordLikeRanges), func(i int) bool {
+		return wordLikeRanges[i][1] >= char
+	})
+	return i < len(wordLikeRanges) && wordLikeRanges[i][0] <= char
+}
+
 func analyzeTokens(text string, language Language) []sourceToken {
-	source := tokenizeSource(text)
+	return filterTokens(tokenizeSource(text), language)
+}
+
+// lowercase mirrors Alyze: each code point is replaced by its Unicode 17
+// lowercase mapping, without context-dependent rules such as final sigma.
+func lowercase(text string) string {
+	ascii, upper := true, false
+	for i := 0; i < len(text); i++ {
+		if b := text[i]; b >= utf8.RuneSelf {
+			ascii = false
+			break
+		} else if 'A' <= b && b <= 'Z' {
+			upper = true
+		}
+	}
+	if ascii {
+		if !upper {
+			return text
+		}
+		return strings.ToLower(text)
+	}
+	var result strings.Builder
+	result.Grow(len(text))
+	for _, char := range text {
+		i := sort.Search(len(lowercaseMappings), func(i int) bool {
+			return lowercaseMappings[i].from >= char
+		})
+		if i < len(lowercaseMappings) && lowercaseMappings[i].from == char {
+			result.WriteString(lowercaseMappings[i].to)
+		} else {
+			result.WriteRune(char)
+		}
+	}
+	return result.String()
+}
+
+// filterTokens lowercases tokens and removes stopwords, keeping each token's
+// source position.
+func filterTokens(source []sourceToken, language Language) []sourceToken {
 	result := make([]sourceToken, 0, len(source))
 	for _, token := range source {
-		token.text = strings.ToLower(token.text)
+		token.text = lowercase(token.text)
 		if language != LanguageGeneric {
 			if _, stopword := stopwordSets[language][token.text]; stopword {
 				continue
@@ -337,20 +370,50 @@ func windowStarts(sourceTokenCount, windowSize, stride int) []int {
 	return starts
 }
 
-func countPositions(positions []int, start, end int) int {
-	left := sort.SearchInts(positions, start)
-	right := sort.SearchInts(positions, end)
-	return right - left
+func addBM25Scores(scores []float64, frequencies, lengths []int, averageLength, weight float64) {
+	documentFrequency := 0
+	for _, tf := range frequencies {
+		if tf > 0 {
+			documentFrequency++
+		}
+	}
+	idf := inverseDocumentFrequency(len(frequencies), documentFrequency)
+	for i, tf := range frequencies {
+		if tf > 0 {
+			scores[i] += weight * bm25TermScore(tf, lengths[i], averageLength, idf)
+		}
+	}
 }
 
-func countBigramEvents(events []bigramEvent, start, end int) int {
-	left := sort.Search(len(events), func(i int) bool {
-		return events[i].left >= start
-	})
-	right := sort.Search(len(events), func(i int) bool {
-		return events[i].right >= end
-	})
-	return max(0, right-left)
+// windowPositionCounts stores, for each window, how many sorted positions
+// fall in [start, start+windowSize). Window starts and ends both increase, so
+// one sweep replaces a binary search per window.
+func windowPositionCounts(positions, starts []int, windowSize int, counts []int) {
+	left, right := 0, 0
+	for i, start := range starts {
+		for left < len(positions) && positions[left] < start {
+			left++
+		}
+		for right < len(positions) && positions[right] < start+windowSize {
+			right++
+		}
+		counts[i] = right - left
+	}
+}
+
+// windowBigramCounts counts bigrams whose left token is at or after start and
+// whose right token is before start+windowSize.
+func windowBigramCounts(events []bigramEvent, starts []int, windowSize int, counts []int) {
+	left, right := 0, 0
+	for i, start := range starts {
+		for left < len(events) && events[left].left < start {
+			left++
+		}
+		for right < len(events) && events[right].right < start+windowSize {
+			right++
+		}
+		counts[i] = max(0, right-left)
+	}
 }
 
 func average(values []int) float64 {

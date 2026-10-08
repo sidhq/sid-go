@@ -94,22 +94,35 @@ func resolveRange(charRange CharacterRange, documentLength int, mode RangeMode, 
 	return CharacterRange{max(0, start), min(end, documentLength)}, nil
 }
 
+// codePointText slices a string by code-point offsets without materializing
+// a []rune copy of the whole text.
 type codePointText struct {
-	text  string
-	runes []rune
+	text   string
+	length int
 }
 
 func newCodePointText(text string) (codePointText, error) {
 	if !utf8.ValidString(text) {
 		return codePointText{}, fmt.Errorf("text must contain well-formed UTF-8")
 	}
-	return codePointText{text: text, runes: []rune(text)}, nil
+	return codePointText{text: text, length: utf8.RuneCountInString(text)}, nil
 }
 
-func (text codePointText) len() int { return len(text.runes) }
+func (text codePointText) len() int { return text.length }
 
 func (text codePointText) slice(start, end int) string {
-	return string(text.runes[start:end])
+	from := byteOffset(text.text, 0, start)
+	return text.text[from:byteOffset(text.text, from, end-start)]
+}
+
+// byteOffset returns the byte index count code points after byte index from.
+func byteOffset(text string, from, count int) int {
+	for count > 0 {
+		_, size := utf8.DecodeRuneInString(text[from:])
+		from += size
+		count--
+	}
+	return from
 }
 
 // ParseRenderedModelFacingID parses a bare model-facing ID or a ranged

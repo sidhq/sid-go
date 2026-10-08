@@ -1,18 +1,20 @@
-package sid
+package sid_test
 
 import (
 	"errors"
 	"regexp"
 	"sync"
 	"testing"
+
+	sid "github.com/sidhq/sid-go"
 )
 
 func TestIDStreamCoversSpaceAndExhausts(t *testing.T) {
 	t.Parallel()
-	stream, err := NewIDStream(IDStreamOptions{
+	stream, err := sid.NewIDStream(sid.IDStreamOptions{
 		Alphabet: "ab",
 		Length:   3,
-		Seed:     IDSeed(7),
+		Seed:     sid.IDSeed(7),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -46,7 +48,7 @@ func TestIDStreamCoversSpaceAndExhausts(t *testing.T) {
 	if _, err := stream.Mint(); err == nil {
 		t.Fatal("exhausted stream did not fail")
 	} else {
-		var exhausted *IDSpaceExhausted
+		var exhausted *sid.IDSpaceExhausted
 		if !errors.As(err, &exhausted) {
 			t.Fatalf("got %T, want IDSpaceExhausted", err)
 		}
@@ -55,11 +57,11 @@ func TestIDStreamCoversSpaceAndExhausts(t *testing.T) {
 
 func TestIDStreamDefaultsAndSeedReproducibility(t *testing.T) {
 	t.Parallel()
-	left, err := NewIDStream(IDStreamOptions{Seed: IDSeed(42)})
+	left, err := sid.NewIDStream(sid.IDStreamOptions{Seed: sid.IDSeed(42)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	right, err := NewIDStream(IDStreamOptions{Seed: IDSeed(42)})
+	right, err := sid.NewIDStream(sid.IDStreamOptions{Seed: sid.IDSeed(42)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,14 +90,14 @@ func TestIDStreamDefaultsAndSeedReproducibility(t *testing.T) {
 func TestIDStreamValidation(t *testing.T) {
 	t.Parallel()
 	for _, alphabet := range []string{"abca", "abc#", "abc:"} {
-		if _, err := NewIDStream(IDStreamOptions{Alphabet: alphabet, Length: 2}); err == nil {
+		if _, err := sid.NewIDStream(sid.IDStreamOptions{Alphabet: alphabet, Length: 2}); err == nil {
 			t.Fatalf("alphabet %q did not fail", alphabet)
 		}
 	}
-	if _, err := NewIDStream(IDStreamOptions{Alphabet: "ab", Length: -1}); err == nil {
+	if _, err := sid.NewIDStream(sid.IDStreamOptions{Alphabet: "ab", Length: -1}); err == nil {
 		t.Fatal("negative length did not fail")
 	}
-	stream, err := NewIDStream(IDStreamOptions{Alphabet: "a", Length: 1})
+	stream, err := sid.NewIDStream(sid.IDStreamOptions{Alphabet: "a", Length: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +110,7 @@ func TestIDStreamValidation(t *testing.T) {
 }
 
 func TestIDStreamConcurrentMint(t *testing.T) {
-	stream, err := NewIDStream(IDStreamOptions{Seed: IDSeed(0)})
+	stream, err := sid.NewIDStream(sid.IDStreamOptions{Seed: sid.IDSeed(0)})
 	if err != nil {
 		t.Fatal(err)
 	}
