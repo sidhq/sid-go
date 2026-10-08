@@ -123,12 +123,29 @@ Each fork has an independently locked seen ledger. `ApplySnippet` and
 `UpdateSeen` remain separate operations, so callers should serialize that pair
 when multiple goroutines use the same fork as one agent.
 
+## SID-2 reference implementation
+
+[`examples/reference_implementation`](examples/reference_implementation/main.go)
+runs a complete SID-2 episode: tool schemas, the agent loop, search rendering,
+reads, and the final report. Implement `vectorSearch` and `keywordSearch`
+against your search backend, then run:
+
+```sh
+cd examples
+SID_API_KEY=your-api-key go run ./reference_implementation
+```
+
+The examples are a separate module because they call the Responses API with
+the [OpenAI Go client](https://github.com/openai/openai-go), which requires
+Go 1.25 or newer. The SDK itself has no dependency on it.
+
 ## Development
 
 ```sh
 go test ./...
 go test -race ./...
 go vet ./...
+(cd examples && go vet ./... && go build ./...)
 ```
 
 ## License

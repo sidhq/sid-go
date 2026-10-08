@@ -10,27 +10,29 @@
 //
 // Run:
 //
-//	SID_API_KEY=your-api-key go run ./examples/reference_implementation
+//	cd examples && SID_API_KEY=your-api-key go run ./reference_implementation
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"maps"
-	"net/http"
 	"os"
 	"slices"
 	"strings"
 	"sync"
 	"unicode/utf8"
 
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/packages/param"
+	"github.com/openai/openai-go/v3/responses"
+	"github.com/openai/openai-go/v3/shared"
 	sid "github.com/sidhq/sid-go"
 )
 
@@ -470,78 +472,6 @@ func report(cache *sid.DocumentCache, ids any) ([]string, error) {
 // unchanged on every turn; only input grows.
 // ---------------------------------------------------------------------------
 
-// outputItem holds the fields the loop reads from one response output item.
-// raw is echoed back verbatim so reasoning items keep their encrypted_content.
-type outputItem struct {
-	raw       json.RawMessage
-	Type      string `json:"type"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-	CallID    string `json:"call_id"`
-	Content   []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
-}
-
-type response struct {
-	Status string            `json:"status"`
-	Output []json.RawMessage `json:"output"`
-	items  []outputItem
-}
-
-type client struct {
-	http      *http.Client
-	url       string
-	apiKey    string
-	sessionID string // KV cache routing information: one session per episode
-	request   object
-}
-
-func (c *client) create(ctx context.Context, history []any) (*response, error) {
-	body := make(object, len(c.request)+1)
-	for key, value := range c.request {
-		body[key] = value
-	}
-	body["input"] = history
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url+"/responses", bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("x-session-affinity", c.sessionID)
-	httpResponse, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer httpResponse.Body.Close()
-	data, err := io.ReadAll(httpResponse.Body)
-	if err != nil {
-		return nil, err
-	}
-	if httpResponse.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("responses API returned %s: %s", httpResponse.Status, data)
-	}
-
-	var result response
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, err
-	}
-	for _, raw := range result.Output {
-		item := outputItem{raw: raw}
-		if err := json.Unmarshal(raw, &item); err != nil {
-			return nil, err
-		}
-		result.items = append(result.items, item)
-	}
-	return &result, nil
-}
-
 type fetched struct {
 	results []sid.Document
 	err     error
@@ -553,44 +483,50 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	apiKey := os.Getenv("SID_API_KEY")
+	if apiKey == "" {
+		log.Fatal("SID_API_KEY is not set")
+	}
+	client := openai.NewClient(option.WithBaseURL(baseURL()), option.WithAPIKey(apiKey))
 
 	// One request shape, only update the history at each turn.
-	c := &client{
-		http:      http.DefaultClient,
-		url:       baseURL(),
-		apiKey:    os.Getenv("SID_API_KEY"),
-		sessionID: newSessionID(),
-		request: object{
-			"model":             model,
-			"max_output_tokens": 4096,
-			"store":             false,
-			"include":           []string{"reasoning.encrypted_content"},
-			"instructions":      instructions,
-			"tools":             tools,
-			// Reasoning effort, tool_examples, and the target reward are managed server-side
-			"reasoning": object{"effort": reasoningEffort},
-			"sid":       object{"tool_examples": toolExamples, "reward": reward},
-		},
+	request := responses.ResponseNewParams{
+		Model:           model,
+		MaxOutputTokens: openai.Int(4096),
+		Store:           openai.Bool(false),
+		Include:         []responses.ResponseIncludable{responses.ResponseIncludableReasoningEncryptedContent},
+		Instructions:    openai.String(instructions),
+		// Reasoning effort, tool_examples, and the target reward are managed server-side
+		Reasoning: shared.ReasoningParam{Effort: reasoningEffort},
 	}
-	if c.apiKey == "" {
-		log.Fatal("SID_API_KEY is not set")
+	options := []option.RequestOption{
+		// The tools and the sid extension are plain JSON, set on the request body.
+		option.WithJSONSet("tools", tools),
+		option.WithJSONSet("sid", object{"tool_examples": toolExamples, "reward": reward}),
+		option.WithHeader("x-session-affinity", newSessionID()), // KV cache routing: one session per episode
 	}
 
 	// The whole conversation as Responses API input items, grown every turn.
-	history := []any{object{"role": "user", "content": question}}
+	history := responses.ResponseInputParam{
+		responses.ResponseInputItemParamOfMessage(question, responses.EasyInputMessageRoleUser),
+	}
+	create := func() (*responses.Response, error) {
+		request.Input = responses.ResponseNewParamsInputUnion{OfInputItemList: history}
+		return client.Responses.New(ctx, request, options...)
+	}
 
 	fmt.Printf("Q: %s\n", question)
-	resp, err := c.create(ctx, history)
+	resp, err := create()
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	for turn := 1; turn <= maxTurns; turn++ {
 		printModelOutput(turn, resp)
-		var calls []outputItem
-		for _, item := range resp.items {
+		var calls []responses.ResponseFunctionToolCall
+		for _, item := range resp.Output {
 			if item.Type == "function_call" {
-				calls = append(calls, item)
+				calls = append(calls, item.AsFunctionCall())
 			}
 		}
 		arguments := make([]object, len(calls))
@@ -640,7 +576,7 @@ func main() {
 			fmt.Printf("\n[max turns reached: %d: episode ends without a report]\n", maxTurns)
 			return
 		}
-		if resp.Status == "incomplete" {
+		if resp.Status == responses.ResponseStatusIncomplete {
 			fmt.Println("\n[generation hit max_output_tokens; ending the episode]")
 			return
 		}
@@ -648,11 +584,13 @@ func main() {
 		// Non-terminal turn: append the model's output verbatim (the reasoning
 		// items carry their encrypted_content), then feed back the tool outputs
 		// (paired by call_id) plus the turn budget indicator as a user message.
-		for _, raw := range resp.Output {
-			history = append(history, raw)
+		for _, item := range resp.Output {
+			history = append(history, param.Override[responses.ResponseInputItemUnionParam](json.RawMessage(item.RawJSON())))
 		}
 		for i, call := range calls {
-			history = append(history, object{"type": "function_call_output", "call_id": call.CallID, "output": observations[i]})
+			output := responses.ResponseInputItemParamOfFunctionCallOutput(observations[i])
+			output.OfFunctionCallOutput.CallID = openai.String(call.CallID)
+			history = append(history, output)
 		}
 
 		remaining := maxTurns - turn
@@ -667,11 +605,11 @@ func main() {
 					"Anything you have found but not reported is lost when this turn ends.", reportTool["name"]))
 		}
 		for _, message := range messages {
-			history = append(history, object{"role": "user", "content": message})
+			history = append(history, responses.ResponseInputItemParamOfMessage(message, responses.EasyInputMessageRoleUser))
 			fmt.Printf("[user] %s\n", message)
 		}
 
-		if resp, err = c.create(ctx, history); err != nil {
+		if resp, err = create(); err != nil {
 			log.Fatal(err)
 		}
 	}
@@ -718,7 +656,7 @@ func runTool(
 // tool's schema declares, and drop the ""/null "defaults" LLMs like to send.
 // Anything else the model got wrong comes back as a ToolError from the fetch
 // or the tool.
-func toolArguments(call outputItem) object {
+func toolArguments(call responses.ResponseFunctionToolCall) object {
 	var arguments object
 	properties := toolProperties(call.Name)
 	if json.Unmarshal([]byte(call.Arguments), &arguments) != nil || properties == nil {
@@ -755,20 +693,18 @@ func newSessionID() string {
 
 // printModelOutput prints the model's side of one turn: its thinking, any
 // prose, and its calls.
-func printModelOutput(turn int, resp *response) {
+func printModelOutput(turn int, resp *responses.Response) {
 	fmt.Printf("\n--- turn %d (status=%s) %s\n", turn, resp.Status, strings.Repeat("-", 40))
-	for _, item := range resp.items {
+	for _, item := range resp.Output {
 		switch item.Type {
 		case "reasoning":
-			for _, part := range item.Content {
+			for _, part := range item.AsReasoning().Content {
 				fmt.Printf("[thinking] %s\n", part.Text)
 			}
 		case "message":
-			for _, part := range item.Content {
-				fmt.Printf("[assistant] %s\n", part.Text)
-			}
+			fmt.Printf("[assistant] %s\n", resp.OutputText())
 		case "function_call":
-			fmt.Printf(">>> %s(%s)\n", item.Name, item.Arguments)
+			fmt.Printf(">>> %s(%s)\n", item.Name, item.AsFunctionCall().Arguments)
 		}
 	}
 }
