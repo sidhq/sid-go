@@ -5,7 +5,6 @@ import (
 	"math"
 	"sort"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/clipperhouse/uax29/v2/words"
@@ -127,7 +126,7 @@ func BM25SnippetWithStride(query, content string, options ...SnippetOptions) (Ch
 	queryTokens := analyzeTokens(query, opts.Language)
 	unigrams := uniqueUnigrams(queryTokens)
 	bigrams := uniqueBigrams(queryTokens)
-	contentTokens := analyzeTokens(content, opts.Language)
+	contentTokens := filterTokens(source, opts.Language)
 
 	filteredPositions := make([]int, len(contentTokens))
 	unigramEvents := make(map[string][]int, len(unigrams))
@@ -232,43 +231,63 @@ func validateLanguage(language Language) (Language, error) {
 	)
 }
 
+// tokenizeSource returns the word-like UAX #29 segments of text with
+// code-point offsets. Segments arrive in order, so offsets are counted
+// incrementally rather than through a byte-to-code-point table.
 func tokenizeSource(text string) []sourceToken {
-	byteToCodePoint := make(map[int]int, utf8.RuneCountInString(text)+1)
-	position := 0
-	for byteOffset := range text {
-		byteToCodePoint[byteOffset] = position
-		position++
-	}
-	byteToCodePoint[len(text)] = position
-
-	result := make([]sourceToken, 0)
+	result := make([]sourceToken, 0, len(text)/6)
+	byteOffset, codePoint := 0, 0
 	iterator := words.FromString(text)
 	for iterator.Next() {
 		value := iterator.Value()
-		if !containsWordRune(value) {
+		if !isWordLike(value) {
 			continue
 		}
+		start := codePoint + utf8.RuneCountInString(text[byteOffset:iterator.Start()])
+		end := start + utf8.RuneCountInString(value)
+		byteOffset, codePoint = iterator.End(), end
 		result = append(result, sourceToken{
 			text:     value,
-			start:    byteToCodePoint[iterator.Start()],
-			end:      byteToCodePoint[iterator.End()],
+			start:    start,
+			end:      end,
 			position: len(result),
 		})
 	}
 	return result
 }
 
-func containsWordRune(value string) bool {
-	for _, char := range value {
-		if unicode.IsLetter(char) || unicode.IsNumber(char) {
+// isWordLike mirrors Alyze: a segment is a token when any of its characters
+// is in wordLikeRanges.
+func isWordLike(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if b := value[i]; b >= utf8.RuneSelf {
+			for _, char := range value[i:] {
+				if isWordLikeRune(char) {
+					return true
+				}
+			}
+			return false
+		} else if 'a' <= b && b <= 'z' || 'A' <= b && b <= 'Z' || '0' <= b && b <= '9' {
 			return true
 		}
 	}
 	return false
 }
 
+func isWordLikeRune(char rune) bool {
+	i := sort.Search(len(wordLikeRanges), func(i int) bool {
+		return wordLikeRanges[i][1] >= char
+	})
+	return i < len(wordLikeRanges) && wordLikeRanges[i][0] <= char
+}
+
 func analyzeTokens(text string, language Language) []sourceToken {
-	source := tokenizeSource(text)
+	return filterTokens(tokenizeSource(text), language)
+}
+
+// filterTokens lowercases tokens and removes stopwords, keeping each token's
+// source position.
+func filterTokens(source []sourceToken, language Language) []sourceToken {
 	result := make([]sourceToken, 0, len(source))
 	for _, token := range source {
 		token.text = strings.ToLower(token.text)

@@ -254,3 +254,32 @@ func leftPad(value, width int) string {
 	}
 	return text
 }
+
+// Alyze counts symbol and emoji segments such as ® and 👍 as source tokens,
+// so they occupy window slots. Expected ranges come from sid-sdk 0.2.1.
+func TestBM25SnippetCountsSymbolTokens(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		content  string
+		window   int
+		expected sid.CharacterRange
+	}{
+		{"Missing Children® (NCMEC) data here", 3, sid.CharacterRange{0, 17}},
+		{"SmartPay® 3 Master", 2, sid.CharacterRange{0, 9}},
+		{"Brand™ name", 2, sid.CharacterRange{0, 6}},
+		{"a 👍 b", 2, sid.CharacterRange{0, 3}},
+		{"e-mail don't U.S. 3.14 foo_bar", 3, sid.CharacterRange{0, 12}},
+	}
+	for _, test := range tests {
+		got, err := sid.BM25SnippetWithStride("the", test.content, sid.SnippetOptions{
+			WindowSize: test.window,
+			Stride:     test.window,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != test.expected {
+			t.Errorf("%q window %d: got %v, want %v", test.content, test.window, got, test.expected)
+		}
+	}
+}
