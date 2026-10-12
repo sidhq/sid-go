@@ -136,8 +136,9 @@ SID_API_KEY=your-api-key go run ./reference_implementation
 ```
 
 The examples are a separate module because they call the Responses API with
-the [OpenAI Go client](https://github.com/openai/openai-go), which requires
-Go 1.25 or newer. The SDK itself has no dependency on it.
+the [OpenAI Go client](https://github.com/openai/openai-go). They pin
+openai-go v3.74.0, which requires Go 1.25 or newer; openai-go v3.75.0 and later
+require Go 1.26. The SDK itself has no dependency on it.
 
 ## Development
 
